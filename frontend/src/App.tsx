@@ -1,11 +1,24 @@
 import React, { useState } from 'react';
 import { Upload, Video, Loader2, Home, Activity } from 'lucide-react';
 
+interface PersonalityTraits {
+  Openness: number;
+  Conscientiousness: number;
+  Extraversion: number;
+  Agreeableness: number;
+  Neuroticism: number;
+}
+
+interface PredictionResponse {
+  prediction: string;
+  traits: PersonalityTraits;
+}
+
 function App() {
   const [currentPage, setCurrentPage] = useState<'home' | 'analyze'>('home');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [prediction, setPrediction] = useState<string | null>(null);
+  const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,11 +56,12 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to process video');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to process video');
       }
 
       const data = await response.json();
-      setPrediction(data.prediction);
+      setPrediction(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -210,7 +224,23 @@ function App() {
           {prediction && (
             <div className="mt-8 bg-white/5 p-6 rounded-lg">
               <h2 className="text-xl font-semibold mb-4">Analysis Result</h2>
-              <p className="text-gray-300">{prediction}</p>
+              <p className="text-gray-300 mb-4">{prediction.prediction}</p>
+              <div className="space-y-4">
+                {Object.entries(prediction.traits).map(([trait, score]) => (
+                  <div key={trait} className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">{trait}</span>
+                      <span className="text-white">{Math.round(score * 100)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-700 rounded-full h-2">
+                      <div
+                        className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+                        style={{ width: `${score * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

@@ -19,11 +19,12 @@ from transformers import AutoModel, AutoTokenizer
 import copy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+# Get the current directory
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
-CSV_FILE = "/Users/prarabdhatrey/Desktop/personality_detection/backend/VPTD_Dataset.csv"
-#VIDEO_FOLDER = "/Users/prarabdhatrey/Desktop/personality_detection/backend/cache"
-CACHE_FOLDER = "/Users/prarabdhatrey/Desktop/personality_detection/backend/cache"
+# Use relative paths
+CSV_FILE = os.path.join(CURRENT_DIR, "VPTD_Dataset.csv")
+CACHE_FOLDER = os.path.join(CURRENT_DIR, "cache")
 
 # Create cache folder if it doesn't exist
 os.makedirs(CACHE_FOLDER, exist_ok=True)
@@ -49,12 +50,12 @@ def extract_frames(video_path, num_frames=100):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"Error: Unable to open video file {video_path}")
-            return np.zeros((num_frames, 224, 224, 3), dtype=np.uint8)
+            return np.zeros((num_frames, 3, 224, 224), dtype=np.float32)
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames == 0:
             print(f"Warning: No frames in {video_path}")
-            return np.zeros((num_frames, 224, 224, 3), dtype=np.uint8)
+            return np.zeros((num_frames, 3, 224, 224), dtype=np.float32)
 
         frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
         for idx in frame_indices:
@@ -64,17 +65,21 @@ def extract_frames(video_path, num_frames=100):
                 continue
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = cv2.resize(frame, (224, 224))
+            # Convert to float32 and normalize
+            frame = frame.astype(np.float32) / 255.0
+            # Transpose to NCHW format
+            frame = np.transpose(frame, (2, 0, 1))
             frames.append(frame)
         cap.release()
 
         # Pad with blank frames if needed
         while len(frames) < num_frames:
-            frames.append(np.zeros((224, 224, 3), dtype=np.uint8))
+            frames.append(np.zeros((3, 224, 224), dtype=np.float32))
 
         return np.array(frames)
     except Exception as e:
         print(f"Error processing video {video_path}: {e}")
-        return np.zeros((num_frames, 224, 224, 3), dtype=np.uint8)
+        return np.zeros((num_frames, 3, 224, 224), dtype=np.float32)
 
 # Extract audio and text features with caching
 def extract_audio_and_text(video_path, language="ru-RU", sr=16000):
@@ -172,15 +177,36 @@ class MultimodalMAML(nn.Module):
         # Add an intermediate layer
         self.combined_fc = nn.Linear(96, 32)
         self.final_fc = nn.Linear(32, 5)
+        # Add sigmoid activation for final layer
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, video_features, audio_features, text_features):
+        # Ensure all features have batch dimension
+        if video_features.dim() == 1:
+            video_features = video_features.unsqueeze(0)
+        if audio_features.dim() == 1:
+            audio_features = audio_features.unsqueeze(0)
+        if text_features.dim() == 1:
+            text_features = text_features.unsqueeze(0)
+
         video_out = torch.relu(self.video_fc(video_features))
         audio_out = torch.relu(self.audio_fc(audio_features))
         text_out = torch.relu(self.text_fc(text_features))
+        
+        # Ensure all outputs have the same batch dimension
+        batch_size = max(video_out.size(0), audio_out.size(0), text_out.size(0))
+        if video_out.size(0) < batch_size:
+            video_out = video_out.expand(batch_size, -1)
+        if audio_out.size(0) < batch_size:
+            audio_out = audio_out.expand(batch_size, -1)
+        if text_out.size(0) < batch_size:
+            text_out = text_out.expand(batch_size, -1)
+            
         combined = torch.cat((video_out, audio_out, text_out), dim=1)
         combined = torch.relu(self.combined_fc(combined))
         combined = self.dropout(combined)  # Apply dropout
-        return self.final_fc(combined)
+        output = self.final_fc(combined)
+        return self.sigmoid(output)  # Apply sigmoid to constrain to [0,1]
 
 class MAML:
     def __init__(self, model, lr_inner=0.05, lr_outer=0.001):  # Reduced inner learning rate
